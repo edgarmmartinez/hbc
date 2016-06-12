@@ -56,9 +56,9 @@ import com.twitter.hbc.example.TtlHashMap;
 import java.util.concurrent.TimeUnit;
 
 import org.isaseb.utils.RankQueue;
+import org.isaseb.utils.TimedRankQueue;
 
-public class SampleStreamExample {
-
+public class StreamRankQueue {
     static      List<Map.Entry<String, Integer>> sortHashtable (Hashtable<String,Integer> table) {
         List<Map.Entry<String, Integer>> entries =
                   new ArrayList<Map.Entry<String, Integer>>(table.entrySet());
@@ -96,6 +96,11 @@ public class SampleStreamExample {
     	return entries;
     }
     
+    static void printRankList (List<Map.Entry<String,Integer>> list, int topN) {
+    	for (int i = 0; i < topN && i < list.size(); i++) {
+    		System.out.println (list.get(i).getKey() + " : " + list.get(i).getValue());
+    	}
+    }
     
     static void printMapList (TtlHashMap<String, Integer> map, int lowestVal, int maxCount) {
         List<Map.Entry<String, Integer>>        list = sortHashMapByValue (map);
@@ -110,32 +115,10 @@ public class SampleStreamExample {
             count += 1;
         }
     }
-    static void printTopRedis (Jedis db, String key, int topN) {
-        Set<String>     keys = db.keys("*");
-        Set<Tuple>      keyTuples       = db.zrevrangeByScoreWithScores(key, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0, 10);
-        
-        for (Tuple      tuple : keyTuples){
-            System.out.println (tuple.getElement() + " : " + (int) tuple.getScore());
-        }
-    }
-    
-    static List<WordFrequency> createWordCloud (Jedis db, String key, int topN) {
-        Set<String>     keys = db.keys("*");
-        Set<Tuple>      keyTuples       = db.zrevrangeByScoreWithScores(key, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 0, topN);
+
+    static List<WordFrequency> createWordCloud (List<Map.Entry<String,Integer>> list, int topN) {
         List<WordFrequency>     freqList        = new ArrayList<WordFrequency> (topN);
         
-        for (Tuple      tuple : keyTuples){
-            WordFrequency       freq = new WordFrequency (tuple.getElement(), (int) tuple.getScore());
-            freqList.add (freq);
-        }
-        
-        return (List<WordFrequency>) freqList;
-    }
-    
-    static List<WordFrequency> createWordCloud (TtlHashMap map, int topN) {
-        List<WordFrequency>     freqList        = new ArrayList<WordFrequency> (topN);
-        
-        List<Map.Entry<String, Integer>>        list = sortHashMapByValue (map);
         int     count = 0;
         
         for (Map.Entry<String, Integer> entry : list) {
@@ -149,8 +132,8 @@ public class SampleStreamExample {
         return (List<WordFrequency>) freqList;
     }
     
-    static void drawWordCloud (TtlHashMap<String,Integer> map, int topN) throws IOException {
-  	  List<WordFrequency> wordFrequencies = createWordCloud(map, topN);
+    static void drawWordCloud (List<Map.Entry<String,Integer>> list, int topN) throws IOException {
+  	  List<WordFrequency> wordFrequencies = createWordCloud(list, topN);
 //  	  wordFrequencies = createWordCloud(redisDb, "hashtags", topN);
         
         final Dimension dimension = new Dimension(1000, 714);
@@ -164,7 +147,8 @@ public class SampleStreamExample {
         wordCloud.writeToFile("output/datarank_wordcloud_circle_sqrt_font_" + new SimpleDateFormat("yyyy_MM_dd_HHmmss").format(Calendar.getInstance().getTime()) + ".png");
     }
 
-  public static void run(String consumerKey, String consumerSecret, String token, String secret, int msgCount, int topN, int trendSec, int debug) throws InterruptedException, IOException {
+  public static void run(String consumerKey, String consumerSecret, String token, String secret,
+		  int msgCount, int topN, int trendSec, boolean wordCloud, int debug) throws InterruptedException, IOException {
     // Create an appropriately sized blocking queue
     BlockingQueue<String> queue = new LinkedBlockingQueue<String>(10000);
 
@@ -176,6 +160,7 @@ public class SampleStreamExample {
     Authentication auth = new OAuth1(consumerKey, consumerSecret, token, secret);
     //Authentication auth = new com.twitter.hbc.httpclient.auth.BasicAuth(username, password);
 
+    System.out.println ("StreamRankQueue run");
     // Create a new BasicClient. By default gzip is enabled.
     BasicClient client = new ClientBuilder()
             .name("sampleExampleClient")
@@ -188,16 +173,9 @@ public class SampleStreamExample {
     // Establish a connection
     client.connect();
 
-    ObjectMapper        mapper = new ObjectMapper();
-    Hashtable<String,Integer>   hashtagCount = new Hashtable<String,Integer>(1000);
-    Hashtable<String,Integer>   nameCount = new Hashtable<String,Integer>(1000);
-    TtlHashMap<String,Integer>	ttlHashtags = new TtlHashMap<String,Integer>(TimeUnit.SECONDS, trendSec);
-    RankQueue<String>			rankQueue = new RankQueue<String>(30);
-    
-//jedis    Jedis redisDb = new Jedis("localhost");
-//jedis    redisDb.set("foo", "bar");
-//jedis    String redValue = redisDb.get("foo");
-//jedis    System.out.println ("Redis read: " + redValue);
+    ObjectMapper mapper = new ObjectMapper();
+    TimedRankQueue<String> hashtagRankQueue = new TimedRankQueue<String>(trendSec);
+    TimedRankQueue<String> usernameRankQueue = new TimedRankQueue<String>(10);
     
     // Do whatever needs to be done with messages
     for (int msgRead = 0; msgRead < msgCount; ) {
@@ -233,57 +211,32 @@ public class SampleStreamExample {
                 for (int i = 0; i < strArr.length; i++) {
                     if (strArr[i].toCharArray() [0] == '#') {
                         if (debug >= 1) System.out.println (strArr[i]);
-                        Integer count = hashtagCount.get (strArr[i]);
-                        //Integer count = redisDb.get(strArray[i]);
-                        int     newVal = 1;
-                        if (count != null) {
-                            newVal = count.intValue() + 1;
-                        }
-                        hashtagCount.put(strArr[i],newVal);
-//jedis                        redisDb.zincrby("hashtags", 1.0, strArr[i]);
-//jedis                        redisDb.expire(strArr[i], 60);
-                        
-                        // Now using TtlHashMap
-                        Integer ttlCount = ttlHashtags.get (strArr[i]);
-                        int	ttlNewVal = 1;
-                        if (ttlCount != null) {
-                        	ttlNewVal = ttlCount.intValue() + 1;
-                        }
-                        ttlHashtags.put(strArr[i], ttlNewVal);
+                        hashtagRankQueue.offer(strArr[i]);
                     }
                 }
                 
                 if (jUser != null) {
                     if (debug >= 2) System.out.println (jUser.asText());
-                    Integer count = nameCount.get(jUser.asText());
-                    int newVal = 1;
-                    if (count != null) {
-                        newVal = count.intValue() + 1;
-                    }
-                    nameCount.put(jUser.asText(), newVal);
-//jedis                    redisDb.incr(jUser.asText());
-//jedis                    redisDb.zincrby("screen_name", 1.0, jUser.asText());
-//jedis                    redisDb.expire(jUser.asText(), 60);
+                    usernameRankQueue.offer(jUser.asText());
                 }
                 
                 msgRead++;
                 
-                if (msgRead % 500 == 0) {
-//                    printTagList(hashtagCount, 2, 10);
-//                    printTagList(nameCount, 2,10);
-
-//                    System.out.println ("\n-------------------------------------------");
-//                    printTopRedis(redisDb, "hashtags", 10);
-//                    System.out.println ("-------------------------------------------");
-//                    printTopRedis(redisDb, "screen_name", 10);
-                    
+                if (msgRead % 20 == 0) {
                     System.out.println ("-------------------------------------------");
                 	System.out.println(new SimpleDateFormat("yyyy/MM/dd HH:mm:ss").format(Calendar.getInstance().getTime()));
-                	System.out.println("OLD Keys in TtlHashTag list: " + ttlHashtags.size());
-                	printMapList(ttlHashtags, 0, 10);
+                	System.out.println("Number of hashtags in list: " + hashtagRankQueue.size());
+                	System.out.println("Number of hashtags ranked: " + hashtagRankQueue.keyCount());
                 	
+                	if (hashtagRankQueue.size() < 50) {
+                    	System.out.println("Hashtags in list: " + hashtagRankQueue.toString());
+                	}
+                	printRankList(hashtagRankQueue.getRank(), 40);
+                }
+                
+                if (wordCloud && msgRead % 5005 == 0) {
                 	long time1 = System.currentTimeMillis();
-                	drawWordCloud (ttlHashtags, topN);
+                	drawWordCloud (hashtagRankQueue.getRank(), topN);
                 	System.out.println ((System.currentTimeMillis() - time1)/1000 + " seconds");
                 }
             }
@@ -291,8 +244,6 @@ public class SampleStreamExample {
       }
     }
 
-//    System.out.println (hashtagCount.size() + " hashtags found");
-//    printTagList(hashtagCount,1, 100);
     client.stop();
 
     // Print some stats
@@ -301,7 +252,7 @@ public class SampleStreamExample {
   
   public static void main(String[] args) throws IOException {
     try {
-      SampleStreamExample.run(args[0], args[1], args[2], args[3], Integer.parseInt(args[4]), Integer.parseInt(args[5]), Integer.parseInt(args[6]), Integer.parseInt(args[7]));
+    	StreamRankQueue.run(args[0], args[1], args[2], args[3], Integer.parseInt(args[4]), Integer.parseInt(args[5]), Integer.parseInt(args[6]), Boolean.parseBoolean(args[7]), Integer.parseInt(args[8]));
     } catch (InterruptedException e) {
       System.out.println(e);
     }

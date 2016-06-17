@@ -176,7 +176,12 @@ public class StreamRankQueue {
     ObjectMapper mapper = new ObjectMapper();
     TimedRankQueue<String> hashtagRankQueue = new TimedRankQueue<String>(trendSec);
     TimedRankQueue<String> usernameRankQueue = new TimedRankQueue<String>(10);
-    
+  	Jedis redisDb = new Jedis("localhost");
+  //jedis    redisDb.set("foo", "bar");
+  //jedis    String redValue = redisDb.get("foo");
+  //jedis    System.out.println ("Redis read: " + redValue);
+  //jedis    redisDb.expire("foo", 60);
+   
     // Do whatever needs to be done with messages
     for (int msgRead = 0; msgRead < msgCount; ) {
       if (client.isDone()) {
@@ -212,6 +217,7 @@ public class StreamRankQueue {
                     if (strArr[i].toCharArray() [0] == '#') {
                         if (debug >= 1) System.out.println (strArr[i]);
                         hashtagRankQueue.offer(strArr[i]);
+                        redisDb.setex (strArr[i], trendSec + 10, Integer.toString(hashtagRankQueue.getRank (strArr[i])));
                     }
                 }
                 

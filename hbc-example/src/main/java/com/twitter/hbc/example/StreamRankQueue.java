@@ -16,6 +16,9 @@ package com.twitter.hbc.example;
 import java.util.*;
 import java.lang.*;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.io.Writer;
 import java.text.SimpleDateFormat;
 
 import com.twitter.hbc.ClientBuilder;
@@ -46,8 +49,11 @@ import com.kennycason.kumo.bg.CircleBackground;
 import com.kennycason.kumo.bg.PixelBoundryBackground;
 import com.kennycason.kumo.palette.ColorPalette;
 import com.kennycason.kumo.font.scale.SqrtFontScalar;
+
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.awt.Color;
 import java.awt.Dimension;
 
@@ -173,6 +179,9 @@ public class StreamRankQueue {
     // Establish a connection
     client.connect();
 
+    Writer dumpFile = new BufferedWriter(new OutputStreamWriter(
+        new FileOutputStream("twitterDump.json", true), "utf-8"));
+
     ObjectMapper mapper = new ObjectMapper();
     TimedRankQueue<String> hashtagRankQueue = new TimedRankQueue<String>(trendSec);
     TimedRankQueue<String> usernameRankQueue = new TimedRankQueue<String>(10);
@@ -194,7 +203,10 @@ public class StreamRankQueue {
       if (msg == null) {
         System.out.println("Did not receive a message in 5 seconds");
       } else {
-//        System.out.println(msg + ",");
+
+    	if (debug > 0) {
+    		dumpFile.write(msg + ",");
+    	}
 
         JsonNode node = mapper.readTree(msg);
         Iterator<String> fieldNames = node.fieldNames();
@@ -237,7 +249,14 @@ public class StreamRankQueue {
                 	if (hashtagRankQueue.size() < 50) {
                     	System.out.println("Hashtags in list: " + hashtagRankQueue.toString());
                 	}
-                	printRankList(hashtagRankQueue.getRank(), 40);
+                	List<Map.Entry<String,Integer>> list = hashtagRankQueue.getRank();
+                	Map<String, Double> rankMap = new HashMap<String, Double>(topN);
+                	for (int i = 0; i < topN && i < list.size(); i++) {
+                		rankMap.put(list.get(i).getKey(), (double) list.get(i).getValue());
+                	}
+                	redisDb.del("hashtagRank");
+                	redisDb.zadd("hashtagRank", rankMap);
+                	printRankList(list, 40);
                 }
                 
                 if (wordCloud && msgRead % 5005 == 0) {
